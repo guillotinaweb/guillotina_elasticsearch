@@ -19,6 +19,7 @@ from os.path import join
 
 import aioelasticsearch
 import asyncio
+import elasticsearch
 import json
 import logging
 
@@ -95,14 +96,17 @@ class Vacuum:
             indexes.append(index['index'])
 
         for index_name in indexes:
-            result = await self.conn.search(
-                index=index_name,
-                scroll='15m',
-                size=PAGE_SIZE,
-                _source=False,
-                body={
-                    "sort": ["_doc"]
-                })
+            try:
+                result = await self.conn.search(
+                    index=index_name,
+                    scroll='15m',
+                    size=PAGE_SIZE,
+                    _source=False,
+                    body={
+                        "sort": ["_doc"]
+                    })
+            except elasticsearch.exceptions.NotFoundError:
+                continue
             yield [r['_id'] for r in result['hits']['hits']], index_name
             scroll_id = result['_scroll_id']
             while scroll_id:
@@ -302,17 +306,22 @@ class Vacuum:
         async for batch in self.iter_paged_db_keys([self.container.__uuid__]):
             oids = [r['zoid'] for r in batch]
             indexes = self.get_indexes_for_oids(oids)
-            results = await self.conn.search(
-                ','.join(indexes), body={
-                    'query': {
-                        'terms': {
-                            'uuid': oids
+            try:
+                results = await self.conn.search(
+                    ','.join(indexes), body={
+                        'query': {
+                            'terms': {
+                                'uuid': oids
+                            }
                         }
-                    }
-                },
-                _source=False,
-                stored_fields='tid,parent_uuid',
-                size=PAGE_SIZE)
+                    },
+                    _source=False,
+                    stored_fields='tid,parent_uuid',
+                    size=PAGE_SIZE)
+            except elasticsearch.exceptions.NotFoundError:
+                logger.warning(
+                    f'Error searching index: {indexes}', exc_info=True)
+                continue
 
             es_batch = {}
             for result in results['hits']['hits']:
